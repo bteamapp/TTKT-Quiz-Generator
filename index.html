@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="index.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script type="importmap">
 {
   "imports": {
@@ -15,16 +15,31 @@
   }
 }
 </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 </head>
-<body>
+<body class="dark">
     <div id="app">
         <header>
             <h1>AI Quiz Generator</h1>
-            <p>Paste your quiz content from a Word or PDF document below, and the AI will convert it into the required HTML format.</p>
+            <p>Convert existing quizzes or generate new ones from documents using AI.</p>
         </header>
         <main>
+            <div class="mode-selector">
+                <button id="mode-convert" class="active" aria-pressed="true">Convert Existing Quiz</button>
+                <button id="mode-generate" aria-pressed="false">Generate from Document</button>
+            </div>
+
             <div class="input-container">
-                <label for="quiz-input">Quiz Content</label>
+                <label for="quiz-input" id="input-label">Quiz Content</label>
+                <div class="file-upload-area">
+                    <input type="file" id="file-input" accept=".pdf,.docx" class="hidden">
+                    <button id="upload-btn" aria-label="Upload a PDF or Word document">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                        Upload File (.pdf, .docx)
+                    </button>
+                    <p class="separator">or paste content below</p>
+                </div>
                 <textarea id="quiz-input" rows="15" placeholder="Paste your questions and answers here..."></textarea>
                 <button id="generate-btn" aria-label="Generate HTML quiz from content">Generate Quiz</button>
             </div>
