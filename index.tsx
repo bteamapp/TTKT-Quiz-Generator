@@ -23,6 +23,7 @@ const inputLabel = document.getElementById('input-label') as HTMLLabelElement;
 let currentMode: 'convert' | 'generate' = 'convert';
 // A variable to hold content from file uploads, which might be text or images for OCR
 let uploadedContent: { type: 'text', data: string } | { type: 'images', data: { mimeType: string, data: string }[] } | null = null;
+let originalGenerateBtnText = ''; // To store the button text before loading
 
 
 // --- AI SETUP ---
@@ -50,10 +51,21 @@ QUAN TRỌNG: Sau khi tạo xong các câu hỏi, hãy định dạng toàn bộ
 
 
 // --- FUNCTIONS ---
-const toggleLoading = (isLoading: boolean, message: string = "Generating your quiz, please wait...") => {
-    loadingIndicator.querySelector('p')!.textContent = message;
+const toggleLoading = (isLoading: boolean, message?: string) => {
+    const defaultMessage = currentMode === 'convert' ? 'Converting to HTML...' : 'Generating your quiz...';
+    loadingIndicator.querySelector('p')!.textContent = message || defaultMessage;
     loadingIndicator.classList.toggle('hidden', !isLoading);
+
     generateBtn.disabled = isLoading;
+    if (isLoading) {
+        // Store original text and show processing message
+        originalGenerateBtnText = generateBtn.textContent || '';
+        generateBtn.textContent = 'Processing...';
+    } else {
+        // Restore original text
+        generateBtn.textContent = originalGenerateBtnText;
+    }
+
     quizInput.disabled = isLoading;
     uploadBtn.disabled = isLoading;
     modeConvertBtn.disabled = isLoading;
@@ -79,6 +91,7 @@ const switchMode = (newMode: 'convert' | 'generate') => {
         modeGenerateBtn.setAttribute('aria-pressed', 'false');
         inputLabel.textContent = 'Quiz Content';
         quizInput.placeholder = 'Paste your questions and answers here...';
+        generateBtn.textContent = 'Convert to HTML';
     } else {
         modeGenerateBtn.classList.add('active');
         modeGenerateBtn.setAttribute('aria-pressed', 'true');
@@ -86,7 +99,10 @@ const switchMode = (newMode: 'convert' | 'generate') => {
         modeConvertBtn.setAttribute('aria-pressed', 'false');
         inputLabel.textContent = 'Document Content';
         quizInput.placeholder = 'Upload or paste document content to generate a quiz from...';
+        generateBtn.textContent = 'Generate Quiz';
     }
+    // Store the correct text for the button for later use in toggleLoading
+    originalGenerateBtnText = generateBtn.textContent;
     quizInput.value = '';
     uploadedContent = null; // Clear uploaded content on mode switch
     clearError();
@@ -110,6 +126,22 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
     });
 };
 
+// Helper to read file as ArrayBuffer using Promises for cleaner async/await syntax
+const readFileAsArrayBuffer = (file: File): Promise<ArrayBuffer> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            if (reader.result instanceof ArrayBuffer) {
+                resolve(reader.result);
+            } else {
+                reject(new Error('Failed to read file as ArrayBuffer.'));
+            }
+        };
+        reader.onerror = () => reject(reader.error || new Error('File reading error.'));
+        reader.readAsArrayBuffer(file);
+    });
+};
+
 const handleFile = async (file: File) => {
     clearError();
     toggleLoading(true, 'Processing file...');
@@ -119,57 +151,48 @@ const handleFile = async (file: File) => {
     try {
         if (file.type === 'application/pdf') {
             pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
-            const reader = new FileReader();
-            await new Promise<void>((resolve, reject) => {
-                reader.onload = async () => {
-                    try {
-                        const pdf = await pdfjsLib.getDocument(reader.result).promise;
-                        let fullText = '';
-                        for (let i = 1; i <= pdf.numPages; i++) {
-                            const page = await pdf.getPage(i);
-                            const textContent = await page.getTextContent();
-                            fullText += textContent.items.map((item: any) => item.str).join(' ');
-                        }
-                        
-                        // Heuristic to check if it's a scanned PDF (very little text extracted)
-                        if (fullText.trim().length < 100 * pdf.numPages) { 
-                             // Likely a scanned PDF, switch to image conversion
-                            const images: { mimeType: string, data: string }[] = [];
-                            for (let i = 1; i <= pdf.numPages; i++) {
-                                toggleLoading(true, `Converting page ${i} of ${pdf.numPages} to image...`);
-                                const page = await pdf.getPage(i);
-                                const viewport = page.getViewport({ scale: 1.5 });
-                                const canvas = document.createElement('canvas');
-                                const context = canvas.getContext('2d');
-                                if (!context) throw new Error('Could not get canvas context.');
-                                canvas.height = viewport.height;
-                                canvas.width = viewport.width;
+            
+            const fileBuffer = await readFileAsArrayBuffer(file);
+            const pdf = await pdfjsLib.getDocument(fileBuffer).promise;
 
-                                await page.render({ canvasContext: context, viewport: viewport }).promise;
-                                
-                                const blob: Blob | null = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.8));
-                                if (!blob) throw new Error(`Failed to convert page ${i} to image.`);
+            let fullText = '';
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
+                fullText += textContent.items.map((item: any) => item.str).join(' ');
+            }
+            
+            // Heuristic to check if it's a scanned PDF (very little text extracted)
+            if (fullText.trim().length < 100 * pdf.numPages && pdf.numPages > 0) { 
+                 // Likely a scanned PDF, switch to image conversion
+                const images: { mimeType: string, data: string }[] = [];
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    toggleLoading(true, `Converting page ${i} of ${pdf.numPages} to image...`);
+                    const page = await pdf.getPage(i);
+                    const viewport = page.getViewport({ scale: 1.5 });
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    if (!context) throw new Error('Could not get canvas context.');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
 
-                                const base64Data = await blobToBase64(blob);
-                                images.push({
-                                    mimeType: 'image/jpeg',
-                                    data: base64Data
-                                });
-                            }
-                            uploadedContent = { type: 'images', data: images };
-                            quizInput.value = `[Processed ${pdf.numPages} pages from PDF for image recognition]`;
-                        } else {
-                            uploadedContent = { type: 'text', data: fullText };
-                            quizInput.value = fullText;
-                        }
-                        resolve();
-                    } catch (e) {
-                        reject(e);
-                    }
-                };
-                reader.onerror = () => reject(new Error("Failed to read the file."));
-                reader.readAsArrayBuffer(file);
-            });
+                    await page.render({ canvasContext: context, viewport: viewport }).promise;
+                    
+                    const blob: Blob | null = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.8));
+                    if (!blob) throw new Error(`Failed to convert page ${i} to image.`);
+
+                    const base64Data = await blobToBase64(blob);
+                    images.push({
+                        mimeType: 'image/jpeg',
+                        data: base64Data
+                    });
+                }
+                uploadedContent = { type: 'images', data: images };
+                quizInput.value = `[Processed ${pdf.numPages} pages from PDF for image recognition]`;
+            } else {
+                uploadedContent = { type: 'text', data: fullText };
+                quizInput.value = fullText;
+            }
         } else if (file.name.endsWith('.docx')) {
             const arrayBuffer = await file.arrayBuffer();
             const result = await mammoth.extractRawText({ arrayBuffer: arrayBuffer });
