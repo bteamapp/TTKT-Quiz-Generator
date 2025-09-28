@@ -53,7 +53,10 @@ QUAN TRỌNG: Sau khi tạo xong các câu hỏi, hãy định dạng toàn bộ
 // --- FUNCTIONS ---
 const toggleLoading = (isLoading: boolean, message?: string) => {
     const defaultMessage = currentMode === 'convert' ? 'Converting to HTML...' : 'Generating your quiz...';
-    loadingIndicator.querySelector('p')!.textContent = message || defaultMessage;
+    const loadingText = loadingIndicator.querySelector('p');
+    if (loadingText) {
+        loadingText.textContent = message || defaultMessage;
+    }
     loadingIndicator.classList.toggle('hidden', !isLoading);
 
     generateBtn.disabled = isLoading;
