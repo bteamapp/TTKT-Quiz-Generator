@@ -21,12 +21,14 @@ const inputLabel = document.getElementById('input-label') as HTMLLabelElement;
 
 // --- STATE ---
 let currentMode: 'convert' | 'generate' = 'convert';
+// A variable to hold content from file uploads, which might be text or images for OCR
+let uploadedContent: { type: 'text', data: string } | { type: 'images', data: { mimeType: string, data: string }[] } | null = null;
 
 
 // --- AI SETUP ---
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-const CONVERT_SYSTEM_PROMPT = `Bạn là một trợ lý soạn thảo mã HTML chuyên nghiệp cho bài kiểm tra "Trắc nghiệm TTKT". Hãy chuyển đổi nội dung tôi cung cấp dưới đây thành mã HTML, tuân thủ cực kỳ nghiêm ngặt các quy tắc sau:
+const CONVERT_SYSTEM_PROMPT = `Bạn là một trợ lý soạn thảo mã HTML chuyên nghiệp cho bài kiểm tra "Trắc nghiệm TTKT". Hãy chuyển đổi nội dung tôi cung cấp dưới đây (có thể là văn bản hoặc hình ảnh) thành mã HTML, tuân thủ cực kỳ nghiêm ngặt các quy tắc sau:
 1. Dòng đầu tiên bắt buộc là thẻ <p>[kiemtraquiz]</p>.
 2. Mọi dòng thông tin (Câu hỏi, Lựa chọn) phải nằm trong một thẻ <p> riêng biệt.
 3. Quan trọng: Tất cả đáp án đúng phải được tổng hợp vào một thẻ <p>[dapan=...] duy nhất đặt ở cuối cùng. Các đáp án cho từng câu phải được ngăn cách nhau bằng dấu phẩy (,) không có khoảng trắng. Không sử dụng dấu sao * nếu đã dùng thẻ đáp án. Ví dụ: <p>[dapan=1A,2B,3C,4:2136,5SD]</p>. Đề bài chỉ được một thẻ <p>, nếu có thông tin cho riêng một câu thì dùng [chitiet], nếu ngữ liệu chung hay đề bài chung thì dùng [nhom]
@@ -40,9 +42,10 @@ const CONVERT_SYSTEM_PROMPT = `Bạn là một trợ lý soạn thảo mã HTML 
 8. Nội dung câu hỏi và đáp án HOÀN TOÀN SUPPORT các thẻ in đậm <b> hay <strong> hay in nghiêng <i>, nếu đề bài cần in đậm hay in nghiêng thì có thể dùng các thẻ này ngay trong câu hỏi hay đáp án hoặc đưa nội dung vào phần <p>[chitiet]</p> thay vì đặt luôn trong đề bài hay đáp án.
 9. Thẻ mở, ví dụ <p>[nhom]</p> hoặc <p>[chitiet]</p>, phải nằm trên một dòng <p> riêng. Toàn bộ nội dung ngữ liệu phải nằm giữa thẻ mở và thẻ đóng. Thẻ đóng, ví dụ <p>[/nhom]</p> hoặc <p>[/chitiet]</p>, cũng phải nằm trên một dòng <p> riêng. 
 10. Nội dung của thẻ chi tiết phải nằm sau Đề bài\\câu hỏi và nằm trước đáp án để hệ thống gán đúng nội dung cho từng câu hỏi, tránh lỗi khi xáo trộn.
-11. Giữ nguyên chính xác 100% nội dung câu hỏi. Chỉ xuất ra mã HTML, không chèn thêm CSS hay JavaScript.`;
+11. Giữ nguyên chính xác 100% nội dung câu hỏi. Chỉ xuất ra mã HTML, không chèn thêm CSS hay JavaScript.
+12. Nếu bạn gặp một hình ảnh trong nội dung gốc, hãy chèn thẻ <p>[Hình ảnh]</p> vào vị trí tương ứng trong mã HTML đầu ra. Đừng cố gắng mô tả hình ảnh.`;
 
-const GENERATE_SYSTEM_PROMPT = `Bạn là một AI chuyên tạo bài kiểm tra. Dựa vào nội dung tài liệu được cung cấp, hãy tạo một bài kiểm tra trắc nghiệm gồm 10 câu hỏi để đánh giá sự hiểu biết về nội dung đó.
+const GENERATE_SYSTEM_PROMPT = `Bạn là một AI chuyên tạo bài kiểm tra. Dựa vào nội dung tài liệu được cung cấp (văn bản hoặc hình ảnh), hãy tạo một bài kiểm tra trắc nghiệm gồm 10 câu hỏi để đánh giá sự hiểu biết về nội dung đó.
 QUAN TRỌNG: Sau khi tạo xong các câu hỏi, hãy định dạng toàn bộ bài kiểm tra thành mã HTML theo các quy tắc nghiêm ngặt sau đây:\n` + CONVERT_SYSTEM_PROMPT;
 
 
@@ -85,57 +88,110 @@ const switchMode = (newMode: 'convert' | 'generate') => {
         quizInput.placeholder = 'Upload or paste document content to generate a quiz from...';
     }
     quizInput.value = '';
+    uploadedContent = null; // Clear uploaded content on mode switch
     clearError();
     outputContainer.classList.add('hidden');
 };
 
+// Helper to convert blob to base64
+const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            if (typeof reader.result === 'string') {
+                // result is "data:mime/type;base64,the-base64-string", remove the prefix
+                resolve(reader.result.split(',')[1]);
+            } else {
+                reject(new Error('Failed to read blob as base64 string.'));
+            }
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+};
+
 const handleFile = async (file: File) => {
     clearError();
-    const originalBtnText = uploadBtn.innerHTML;
-    uploadBtn.innerHTML = 'Processing...';
-    uploadBtn.disabled = true;
+    toggleLoading(true, 'Processing file...');
+    quizInput.value = ''; // Clear previous text input
+    uploadedContent = null; // Clear previous file content
 
     try {
-        let text = '';
         if (file.type === 'application/pdf') {
             pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
             const reader = new FileReader();
-            await new Promise<void>((resolve) => {
+            await new Promise<void>((resolve, reject) => {
                 reader.onload = async () => {
-                    const pdf = await pdfjsLib.getDocument(reader.result).promise;
-                    let fullText = '';
-                    for (let i = 1; i <= pdf.numPages; i++) {
-                        const page = await pdf.getPage(i);
-                        const textContent = await page.getTextContent();
-                        fullText += textContent.items.map((item: any) => item.str).join(' ');
+                    try {
+                        const pdf = await pdfjsLib.getDocument(reader.result).promise;
+                        let fullText = '';
+                        for (let i = 1; i <= pdf.numPages; i++) {
+                            const page = await pdf.getPage(i);
+                            const textContent = await page.getTextContent();
+                            fullText += textContent.items.map((item: any) => item.str).join(' ');
+                        }
+                        
+                        // Heuristic to check if it's a scanned PDF (very little text extracted)
+                        if (fullText.trim().length < 100 * pdf.numPages) { 
+                             // Likely a scanned PDF, switch to image conversion
+                            const images: { mimeType: string, data: string }[] = [];
+                            for (let i = 1; i <= pdf.numPages; i++) {
+                                toggleLoading(true, `Converting page ${i} of ${pdf.numPages} to image...`);
+                                const page = await pdf.getPage(i);
+                                const viewport = page.getViewport({ scale: 1.5 });
+                                const canvas = document.createElement('canvas');
+                                const context = canvas.getContext('2d');
+                                if (!context) throw new Error('Could not get canvas context.');
+                                canvas.height = viewport.height;
+                                canvas.width = viewport.width;
+
+                                await page.render({ canvasContext: context, viewport: viewport }).promise;
+                                
+                                const blob: Blob | null = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.8));
+                                if (!blob) throw new Error(`Failed to convert page ${i} to image.`);
+
+                                const base64Data = await blobToBase64(blob);
+                                images.push({
+                                    mimeType: 'image/jpeg',
+                                    data: base64Data
+                                });
+                            }
+                            uploadedContent = { type: 'images', data: images };
+                            quizInput.value = `[Processed ${pdf.numPages} pages from PDF for image recognition]`;
+                        } else {
+                            uploadedContent = { type: 'text', data: fullText };
+                            quizInput.value = fullText;
+                        }
+                        resolve();
+                    } catch (e) {
+                        reject(e);
                     }
-                    text = fullText;
-                    resolve();
                 };
+                reader.onerror = () => reject(new Error("Failed to read the file."));
                 reader.readAsArrayBuffer(file);
             });
         } else if (file.name.endsWith('.docx')) {
             const arrayBuffer = await file.arrayBuffer();
             const result = await mammoth.extractRawText({ arrayBuffer: arrayBuffer });
-            text = result.value;
+            uploadedContent = { type: 'text', data: result.value };
+            quizInput.value = result.value;
         } else {
             throw new Error('Unsupported file type. Please upload a .pdf or .docx file.');
         }
-        quizInput.value = text;
 
     } catch (error: any) {
         console.error('Error processing file:', error);
         displayError(error.message || 'Failed to process file.');
+        uploadedContent = null; // Clear content on error
     } finally {
-        uploadBtn.innerHTML = originalBtnText;
-        uploadBtn.disabled = false;
+        toggleLoading(false);
         fileInput.value = ''; // Reset file input
     }
 };
 
 const handleGenerate = async () => {
     const inputText = quizInput.value.trim();
-    if (!inputText) {
+    if (!inputText && !uploadedContent) {
         displayError(currentMode === 'convert' ? 'Please paste your quiz content into the text area.' : 'Please upload or paste document content.');
         return;
     }
@@ -146,13 +202,27 @@ const handleGenerate = async () => {
 
     try {
         const systemPrompt = currentMode === 'convert' ? CONVERT_SYSTEM_PROMPT : GENERATE_SYSTEM_PROMPT;
-        const userMessage = currentMode === 'convert' 
-            ? `Hãy chuyển đổi nội dung sau:\n---\n${inputText}` 
-            : `Đây là nội dung tài liệu:\n---\n${inputText}`;
+        
+        let contents: any;
+        const contentToProcess = uploadedContent || { type: 'text', data: inputText };
 
+        if (contentToProcess.type === 'images') {
+            const textPart = { 
+                text: currentMode === 'convert' 
+                    ? `Hãy chuyển đổi nội dung từ các hình ảnh sau:`
+                    : `Đây là nội dung tài liệu dưới dạng hình ảnh. Hãy tạo bài kiểm tra từ nó:`
+            };
+            const imageParts = contentToProcess.data.map(img => ({ inlineData: img }));
+            contents = { parts: [textPart, ...imageParts] };
+        } else { // 'text'
+            contents = currentMode === 'convert' 
+                ? `Hãy chuyển đổi nội dung sau:\n---\n${contentToProcess.data}` 
+                : `Đây là nội dung tài liệu:\n---\n${contentToProcess.data}`;
+        }
+        
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
-            contents: userMessage,
+            contents: contents,
             config: {
                 systemInstruction: systemPrompt,
             }
@@ -162,9 +232,21 @@ const handleGenerate = async () => {
         quizOutput.value = generatedHtml;
         outputContainer.classList.remove('hidden');
 
-    } catch (error) {
+    } catch (error: any) {
         console.error('Error generating quiz:', error);
-        displayError('An error occurred while generating the quiz. Please check the console for details and try again.');
+        let errorMessage = 'An error occurred while generating the quiz. Please try again.';
+        if (error.message) {
+            if (error.message.includes('API_KEY')) {
+                errorMessage = 'Invalid API Key. Please ensure your API key is set up correctly.';
+            } else if (error.message.toLowerCase().includes('quota')) {
+                errorMessage = 'You have exceeded your API quota. Please check your account or try again later.';
+            } else if (error.message.toLowerCase().includes('block')) {
+                errorMessage = 'The request was blocked due to safety settings. Please adjust your input.';
+            } else {
+                errorMessage = `An error occurred: ${error.message}`;
+            }
+        }
+        displayError(errorMessage);
     } finally {
         toggleLoading(false);
     }
